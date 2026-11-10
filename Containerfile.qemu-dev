@@ -32,5 +32,11 @@ RUN ./configure --enable-plugins --target-list=x86_64-softmmu,sparc-softmmu
 RUN make -j$(nproc)
 RUN make install
 
+# Tools of code/demo: tmux for demo.sh. A separate layer, so that adding a tool
+# does not rebuild QEMU.
+RUN apt-get update && apt-get install -y \
+    tmux \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create a clean workspace for your external plugins
 WORKDIR /workspace/spacewire

@@ -31,6 +31,7 @@ applications can use the RTEMS GRSPW drivers without any hardware.
 | `code/device_simu` | Linux | Runtime peer of the link: acknowledges each packet and sends it back in upper case. |
 | `code/rtems_hello` | RTEMS | Minimal application, and `qemu_boot.S`, the entry point needed to boot RTEMS with `-kernel`. |
 | `code/rtems_spw_echo` | RTEMS | SpaceWire echo using the `grspw_pkt` driver, with `device_simu` at the other end. |
+| `code/demo` | Both | Demonstration: an onboard computer (RTEMS) with an inertial measurement unit and a ground station (Linux). |
 | `code/test` | Both | Replayable test suite, on the four cores. |
 | `doc` | | GRSPW (`grspw-1.md`) and GRSPW2 (`grspw-2.md`) documentation. The device models the former. |
 
@@ -48,7 +49,7 @@ while.
 |-------|---------------|-------|---------|
 | 1 | `Containerfile.leon3-toolchain` | `rtems6-sparc-toolchain` | GCC, binutils, newlib and GDB for `sparc-rtems6` |
 | 2 | `Containerfile.rtems-build` | `rtems6-sparc-build` | RTEMS 6.2 with the `sparc/leon3` BSP |
-| 3 | `Containerfile.qemu-dev` | `localhost/qemu-dev-plugin` | QEMU 11.0 sources and build tools |
+| 3 | `Containerfile.qemu-dev` | `localhost/qemu-dev-plugin` | QEMU 11.0 sources and build tools, tmux for the demonstration |
 
 ```sh
 podman build -f Containerfile.leon3-toolchain -t rtems6-sparc-toolchain .
@@ -190,6 +191,75 @@ old messages would be taken for acknowledges:
 
 ```sh
 rm -f /dev/mqueue/spwq /dev/mqueue/devq
+```
+
+## Demonstration
+
+`code/demo` puts the pieces together: an onboard computer on the LEON3 receives the
+data of an inertial measurement unit (IMU), and a ground station commands its state
+with RMAP.
+
+```
+┌─── QEMU: onboard computer (RTEMS) ───┐          ┌─── simu (Linux) ──────────────┐
+│ core 0 ◄──── IMU packets, DMA ───────┼──────────┼──── imu.c      1 packet/s     │
+│ core 2 ───── address of the state ───┼──────────┼───► ground.c                  │
+│        ◄──── RMAP read/write ────────┼──────────┼──── INIT→WARMUP→OPERATIONAL   │
+└──────────────────────────────────────┘  /spwq   └───────────────────────────────┘
+                                          /devq
+```
+
+| Path | Runs on | Role |
+|------|---------|------|
+| `code/demo/demo_protocol.h` | Both | Packet formats, node addresses, RMAP key and states. |
+| `code/demo/onboard` | RTEMS | The onboard computer. |
+| `code/demo/simu` | Linux | The environment simulator, only reader of `/spwq` and writer of `/devq`. It routes the messages by core number to `imu.c` (core 0) and `ground.c` (core 2), and acknowledges every packet of the onboard computer. |
+| `code/demo/demo.sh` | Linux | Runs both side by side in tmux. |
+
+The onboard computer:
+
+- receives the IMU packets on core 0, in DMA: roll, pitch, yaw, angular rates and
+  accelerations, with a sequence number;
+- keeps its state in a variable, whose address it sends to the ground on core 2 at
+  startup. The ground then reads and writes this variable with RMAP commands, which
+  the RMAP target of core 2 executes without the processor;
+- has the states `INIT` → `WARMUP` → `OPERATIONAL`, and `FAIL` from any state. An
+  invalid transition or value written by the ground is reported and undone;
+- ignores the IMU in `INIT`, receives its data without using it in `WARMUP`, and
+  prints it in `OPERATIONAL`;
+- goes to `FAIL` by itself when no IMU data came for 3 s in `OPERATIONAL`;
+- prints a status line every second, and highlights each state change.
+
+The ground station waits for the address, reads the initial state, then commands
+`WARMUP` and `OPERATIONAL` five seconds apart. Each write is a verified write with
+reply, followed by a read of the state. It then reads the state every five seconds.
+Every packet is printed in hexadecimal.
+
+```sh
+code/demo/demo.sh                   # automatic scenario
+code/demo/demo.sh -i                # the ground waits for Enter before each step
+code/demo/demo.sh --imu-fail 20     # the IMU stops after 20 s: the onboard computer goes to FAIL
+code/demo/demo.sh shutdown          # from another terminal: FAIL, then stop after 5 s
+code/demo/demo.sh stop              # from another terminal: stop at once
+```
+
+The script builds both programs. In the tmux session:
+
+| Key | Effect |
+|-----|--------|
+| Escape | The ground station commands `FAIL` with RMAP, and the demonstration stops 5 s later. |
+| Ctrl-C | The demonstration stops at once. |
+| Enter | In `-i` mode, in the right pane: next step of the ground scenario. |
+
+Stopping kills QEMU and the simulator and removes the message queues. The session
+has its own tmux server (`tmux -L spw-demo`), so it also works from inside tmux and
+these keys leave your other sessions alone.
+
+tmux comes with `Containerfile.qemu-dev`. In an older container, install it with
+`apt-get install tmux`, or use two terminals and start the simulator first:
+
+```sh
+make -C code/demo/simu run ARGS="-i"
+make -C code/demo/onboard run
 ```
 
 ## The GRSPW device
