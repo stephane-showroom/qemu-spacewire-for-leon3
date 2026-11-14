@@ -42,6 +42,7 @@ extern "C"
 #define C_PWORD_IDX    1
 #define C_HEADER_IDX   2
 #define C_DATA_SIZE    4
+#define C_MAX_PACKET_SIZE (C_MAXQ_SIZE - (C_HEADER_IDX + 1 + C_DATA_SIZE)) ///< Largest SpaceWire packet in a message: 8185 bytes
 
   /** Reception message attribute
    * @brief This structure contains all error flag which can be forced when a message is sent by the simulated device

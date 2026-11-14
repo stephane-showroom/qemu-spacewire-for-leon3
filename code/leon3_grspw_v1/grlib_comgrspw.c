@@ -49,6 +49,25 @@ static boolean grlib_comgrspw_linkrun(const t_grspw_regptr grspw_regptr)
 }
 
 /*
+ * \brief handle an AHB error of the DMA channel [M 77.4.9, 77.5.7]
+ * \param [in/out] deviceptr     The grspw device
+ * \param [in]     status        The status bit to set (RA or TA)
+ * \param [in]     enable        The enable bit to clear (RE or TE)
+ */
+static void grlib_comgrspw_ahberror(t_grsw_deviceptr deviceptr, const uint32 status, const uint32 enable)
+{
+  t_grspw_regptr grspw_regptr = &deviceptr->grspw_reg;
+
+  grspw_regptr->chn = setbit(grspw_regptr->chn, status);
+  grspw_regptr->chn = clearbit(grspw_regptr->chn, enable);
+
+  if (checkbit(grspw_regptr->chn, C_SPWCHN_AI))
+  {
+    qemu_irq_pulse(deviceptr->irq);
+  }
+}
+
+/*
  * \brief end the transmission of the current TX descriptor
  * \param [in/out] deviceptr     The grspw device
  * \param [in]     link_error    e_true if the packet could not be transmitted
@@ -59,13 +78,21 @@ static void grlib_comgrspw_txcomplete(t_grsw_deviceptr deviceptr, const boolean 
   t_grspw_tx_descrptr txd = &deviceptr->tx_descr;
   uint32 txd_cur = (grspw_regptr->txd & C_SPWTXD_TX_DESC_SELECT) >> 4;
 
-  // [GRSPWSim-xxx] write the TX descriptor in order to disable the used descriptor
-  txd->ctrl = clearbit(txd->ctrl, C_SPWTDW0_EN);
+  deviceptr->tx_pending = e_false;
+
+  // [GRSPWSim-xxx] write the TX descriptor in order to disable the used descriptor.
+  // The core writes the status: LE is cleared unless the packet ended by a link error
+  txd->ctrl = clearbit(txd->ctrl, C_SPWTDW0_EN | C_SPWTDW0_LE);
   if (link_error)
   {
     txd->ctrl = setbit(txd->ctrl, C_SPWTDW0_LE);
   }
-  write_leon3_ram(grspw_regptr->txd, (uint8ptr) &txd->ctrl, sizeof(txd->ctrl), e_true);
+  if (!write_leon3_ram(grspw_regptr->txd, (uint8ptr) &txd->ctrl, sizeof(txd->ctrl), e_true))
+  {
+    // the descriptor is not written and stays enabled [M 77.5.7]
+    grlib_comgrspw_ahberror(deviceptr, C_SPWCHN_TA, C_SPWCHN_TE);
+    return;
+  }
 
   // [GRSPWSim-107] inform a packet has been sent by setting the bit PS of the SPWCHN register
   grspw_regptr->chn = setbit(grspw_regptr->chn, C_SPWCHN_PS);
@@ -74,8 +101,6 @@ static void grlib_comgrspw_txcomplete(t_grsw_deviceptr deviceptr, const boolean 
   // [GRSPWSim-111] otherwise increment and auto wrap the current tx descriptor
   txd_cur = checkbit(txd->ctrl, C_SPWTDW0_WR) ? 0 : (txd_cur + 1) % C_NB_TX_DESCRIPTOR;
   grspw_regptr->txd = deposit(grspw_regptr->txd, C_SPWTXD_TX_DESC_SELECT, txd_cur << 4);
-
-  deviceptr->tx_pending = e_false;
 
   // [GRSPWSim-109] check if the interrupt is requested and if the interrupt controller is enable
   if (checkbit(txd->ctrl, C_SPWTDW0_IE) && checkbit(grspw_regptr->chn, C_SPWCHN_TI))
@@ -106,7 +131,11 @@ void grlib_comgrspw_txenable(t_grsw_deviceptr deviceptr)
     boolean crc_available = checkbit(grspw_regptr->ctr, C_SPWCTR_RC);
 
     // [GRSPWSim-103] read TX descriptor (base address tx descriptor + current descriptor)
-    read_leon3_ram(grspw_regptr->txd, (uint8ptr) txd, sizeof(*txd), e_true);
+    if (!read_leon3_ram(grspw_regptr->txd, (uint8ptr) txd, sizeof(*txd), e_true))
+    {
+      grlib_comgrspw_ahberror(deviceptr, C_SPWCHN_TA, C_SPWCHN_TE);
+      return;
+    }
 
     // [GRSPWSim-104] check if the Tx descriptor is enable
     if (!checkbit(txd->ctrl, C_SPWTDW0_EN))
@@ -127,7 +156,12 @@ void grlib_comgrspw_txenable(t_grsw_deviceptr deviceptr)
     }
 
     // [GRSPWSim-106] read & copy TX header buffer
-    read_leon3_ram(txd->addr_header, g_txpacket, header_len, e_false); // straight copy without format
+    if (!read_leon3_ram(txd->addr_header, g_txpacket, header_len, e_false)) // straight copy without format
+    {
+      // nothing has been sent: the descriptor stays enabled, without error bit [M 77.5.7]
+      grlib_comgrspw_ahberror(deviceptr, C_SPWCHN_TA, C_SPWCHN_TE);
+      return;
+    }
     packet_len = header_len;
 
     if (crc_available && checkbit(txd->ctrl, C_SPWTDW0_HC) && header_len > 0)
@@ -138,7 +172,11 @@ void grlib_comgrspw_txenable(t_grsw_deviceptr deviceptr)
     }
 
     // [GRSPWSim-105] read & copy TX data buffer
-    read_leon3_ram(txd->data, &g_txpacket[packet_len], data_len, e_false); // straight copy without format
+    if (!read_leon3_ram(txd->data, &g_txpacket[packet_len], data_len, e_false)) // straight copy without format
+    {
+      grlib_comgrspw_ahberror(deviceptr, C_SPWCHN_TA, C_SPWCHN_TE);
+      return;
+    }
 
     if (crc_available && checkbit(txd->ctrl, C_SPWTDW0_DC))
     {
@@ -170,6 +208,41 @@ void grlib_comgrspw_txack(t_grsw_deviceptr deviceptr)
   {
     grlib_comgrspw_txcomplete(deviceptr, e_false);
     grlib_comgrspw_txenable(deviceptr);
+  }
+}
+
+/*
+ * \brief abort the pending transmission (DMACTRL.AT) [M 77.5.7]
+ * \param [in/out] deviceptr     The grspw device
+ * \detail The packet is truncated: its descriptor is completed with LE. TE has
+ *         already been cleared by the register write.
+ */
+void grlib_comgrspw_txabort(t_grsw_deviceptr deviceptr)
+{
+  if (deviceptr->tx_pending)
+  {
+    grlib_comgrspw_txcomplete(deviceptr, e_true);
+  }
+}
+
+/*
+ * \brief handle a link error: the link has left the run state [M 77.5.7]
+ * \param [in/out] deviceptr     The grspw device
+ * \detail The rest of the pending packet is discarded and its descriptor completed
+ *         with LE. With DMACTRL.LE the transmitter is disabled, otherwise it goes on
+ *         when the link is in the run state again.
+ */
+void grlib_comgrspw_linkerror(t_grsw_deviceptr deviceptr)
+{
+  t_grspw_regptr grspw_regptr = &deviceptr->grspw_reg;
+
+  if (deviceptr->tx_pending)
+  {
+    grlib_comgrspw_txcomplete(deviceptr, e_true);
+    if (checkbit(grspw_regptr->chn, C_SPWCHN_LE))
+    {
+      grspw_regptr->chn = clearbit(grspw_regptr->chn, C_SPWCHN_TE);
+    }
   }
 }
 
@@ -252,7 +325,12 @@ static t_grspw_rx_result grlib_comgrspw_rxstore(t_grsw_deviceptr deviceptr, cons
   }
 
   // [GRSPWSim-006] read RX descriptor (base address rx descriptor + current descriptor)
-  read_leon3_ram(grspw_regptr->rxd, (uint8ptr) &rxd, sizeof(rxd), e_true);
+  if (!read_leon3_ram(grspw_regptr->rxd, (uint8ptr) &rxd, sizeof(rxd), e_true))
+  {
+    // the packet is spilled and the receiver disabled [M 77.4.9]
+    grlib_comgrspw_ahberror(deviceptr, C_SPWCHN_RA, C_SPWCHN_RE);
+    return e_rx_done;
+  }
 
   // [GRSPWSim-007] check if the Rx descriptor is enable
   if (!checkbit(rxd.ctrl, C_SPWTRW0_EN))
@@ -270,7 +348,9 @@ static t_grspw_rx_result grlib_comgrspw_rxstore(t_grsw_deviceptr deviceptr, cons
     length = (grspw_regptr->rxl & C_SPWRXL_RX_MAX_LENGTH);
   }
 
-  // [GRSPWSim-010] set message reception attribute in order to force error for simulation need
+  // [GRSPWSim-010] the core writes the status bits: clear the values left in the descriptor,
+  // then set message reception attribute in order to force error for simulation need
+  rxd.ctrl = clearbit(rxd.ctrl, C_SPWTRW0_TR | C_SPWTRW0_DC | C_SPWTRW0_HC | C_SPWTRW0_EP);
   rxd.ctrl = setbit(rxd.ctrl, (truncated * C_SPWTRW0_TR));
   rxd.ctrl = setbit(rxd.ctrl, (attptr->dc * C_SPWTRW0_DC));
   rxd.ctrl = setbit(rxd.ctrl, (attptr->hc * C_SPWTRW0_HC));
@@ -283,18 +363,33 @@ static t_grspw_rx_result grlib_comgrspw_rxstore(t_grsw_deviceptr deviceptr, cons
     grspw_regptr->str = setbit(grspw_regptr->str, C_SPWSTR_EE);
   }
 
-  // [GRSPWSim-011] copy the data according to according the incoming packet length or the truncated length
-  write_leon3_ram(rxd.addr, data, length, e_false); // don't inverse the byte order
+  // without unaligned receive accesses (no RMAP), only bits 31:2 of the address are used
+  // [M 77.4.4]
+  if (!checkbit(grspw_regptr->ctr, C_SPWCTR_RX))
+  {
+    rxd.addr &= ~3U;
+  }
 
-  // [GRSPWSim-013] inform a packet has been receive by setting the bit PR of the SPWCHN register
-  grspw_regptr->chn = setbit(grspw_regptr->chn, C_SPWCHN_PR);
+  // [GRSPWSim-011] copy the data according to according the incoming packet length or the truncated length
+  if (!write_leon3_ram(rxd.addr, data, length, e_false)) // don't inverse the byte order
+  {
+    grlib_comgrspw_ahberror(deviceptr, C_SPWCHN_RA, C_SPWCHN_RE);
+    return e_rx_done;
+  }
 
   // [GRSPWSim-012] update the RX descriptor control word
   rxd.ctrl = deposit(rxd.ctrl, C_SPWTRW0_PACKET_LENGTH, length);
 
   // [GRSPWSim-xxx] write the RX descriptor in order to disable the used descriptor
   rxd.ctrl = clearbit(rxd.ctrl, C_SPWTRW0_EN);
-  write_leon3_ram(grspw_regptr->rxd, (uint8ptr) &rxd.ctrl, sizeof(rxd.ctrl), e_true);
+  if (!write_leon3_ram(grspw_regptr->rxd, (uint8ptr) &rxd.ctrl, sizeof(rxd.ctrl), e_true))
+  {
+    grlib_comgrspw_ahberror(deviceptr, C_SPWCHN_RA, C_SPWCHN_RE);
+    return e_rx_done;
+  }
+
+  // [GRSPWSim-013] inform a packet has been receive by setting the bit PR of the SPWCHN register
+  grspw_regptr->chn = setbit(grspw_regptr->chn, C_SPWCHN_PR);
 
   // [GRSPWSim-015] wrap around if requested, otherwise increment and auto wrap the current rx descriptor
   rxd_cur = (grspw_regptr->rxd & C_SPWRXD_RX_DESC_SELECT) >> 3;

@@ -33,10 +33,11 @@ void grlib_reggrspw_reset_registers(const t_grspw_id grspw_id, t_grspw_regptr gr
 {
   grspw_regptr->ctr &= C_SPWCTR_NOTRESET_MASK;
 
-  // RMAP available, with RMAP CRC and unaligned accesses: RMAP enabled by default
+  // RMAP available, with RMAP CRC and unaligned accesses: RMAP enabled by default.
+  // AS takes the value of the rmapen input (1) when RMAP is available [M 77.10.1]
   if (grspw_id >= e_grspw_core3)
   {
-    grspw_regptr->ctr |= C_SPWCTR_RA | C_SPWCTR_RX | C_SPWCTR_RC | C_SPWCTR_RE;
+    grspw_regptr->ctr |= C_SPWCTR_RA | C_SPWCTR_RX | C_SPWCTR_RC | C_SPWCTR_RE | C_SPWCTR_AS;
   }
 
   // RATIONAL : upon reset, the link state goes to reset state and after the reset it goes to ready state
@@ -260,7 +261,8 @@ void grlib_reggrspw_write_registers(const t_grspw_id grspw_id, t_grspw_regptr gr
     break;
 
   case e_key: // SPW Destination Key Register (SPWKEY) 0x10
-    grspw_regptr->key = value & C_SPWKEY_KEY;
+    // the destination key only exists when RMAP is available [M 77.10.5]
+    grspw_regptr->key = (grspw_id >= e_grspw_core3) ? (value & C_SPWKEY_KEY) : 0UL;
     result = grspw_regptr->key;
     break;
 

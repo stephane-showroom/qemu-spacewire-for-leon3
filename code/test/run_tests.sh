@@ -16,6 +16,9 @@
 #
 #   run_tests.sh QEMU RAM_MB
 #
+# ONLY=<pattern> runs only the tests whose name matches the shell pattern, for
+# example ONLY='REQ_GRSPW_03*'.
+#
 # PASS   the test succeeded
 # FAIL   the test failed
 # XFAIL  the test failed because of a known bug
@@ -58,9 +61,15 @@ run_guest() {
     local name=$1 app=$2 peer=$3 pattern=$4 expectation=$5 detail=${6:-}
     local log="$logs/$name.log" peer_pid="" code status=failed
 
+    # shellcheck disable=SC2053
+    if [ -n "${ONLY:-}" ] && [[ $name != $ONLY ]]; then
+        return
+    fi
+
     remove_queues
     if [ -n "$peer" ]; then
-        "$peer" >"$logs/$name.peer.log" 2>&1 &
+        # The peer is a command with its arguments, hence no quotes.
+        $peer >"$logs/$name.peer.log" 2>&1 &
         peer_pid=$!
     fi
 
@@ -89,6 +98,11 @@ run_guest() {
 
 run_queue_test() {
     local name=device_simu_queues simu_pid status=failed
+
+    # shellcheck disable=SC2053
+    if [ -n "${ONLY:-}" ] && [[ $name != $ONLY ]]; then
+        return
+    fi
 
     remove_queues
     "$device_simu" >"$logs/$name.peer.log" 2>&1 &
@@ -136,6 +150,50 @@ for core in 0 1 2 3; do
         run_guest "no_rmap.$core" "build/raw_no_rmap.$core.exe" "$device_simu" "$ok" expected
     fi
 done
+
+# Prints the value of the "@<field>" lines of the header comment of a req/ file.
+req_field() {
+    sed -n "s/^ \* @$2 *//p" "$1"
+}
+
+# One test per requirement, on each core of its "@cores" line. A "@known
+# <cores>: <reason>" line marks a known deviation of the model from the
+# specification on these cores ("all" for every core).
+run_requirements() {
+    local file name side core peer expectation detail known_cores line
+
+    for file in req/REQ_GRSPW_*.c; do
+        name=$(basename "$file" .c)
+        side=$(req_field "$file" side)
+        for core in $(req_field "$file" cores); do
+            expectation=expected
+            detail=""
+            while IFS= read -r line; do
+                known_cores=${line%%:*}
+                if [ "$known_cores" = all ] || [[ " $known_cores " == *" $core "* ]]; then
+                    expectation=known
+                    detail=${line#*: }
+                fi
+            done < <(req_field "$file" known)
+
+            if [ "$side" = peer ]; then
+                run_guest "$name.$core" "build/req/peer_guest.$core.exe" "build/req/$name.peer" \
+                    "$ok" "$expectation" "$detail"
+                continue
+            fi
+
+            peer=$(req_field "$file" peer)
+            case $peer in
+                none)          peer="" ;;
+                device_simu)   peer=$device_simu ;;
+                peer_script*)  peer="build/peer_script ${peer#peer_script}" ;;
+            esac
+            run_guest "$name.$core" "build/req/$name.$core.exe" "$peer" "$ok" "$expectation" "$detail"
+        done
+    done
+}
+
+run_requirements
 
 if [ "$failures" -ne 0 ]; then
     echo "$failures unexpected result(s), see $logs" >&2

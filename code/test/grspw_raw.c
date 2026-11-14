@@ -34,6 +34,7 @@
 #define FIRST_RMAP_CORE   2             /* Cores 2 and 3 have RMAP */
 
 #define CTR_LS            (1U << 1)
+#define CTR_AS            (1U << 2)
 #define CTR_IE            (1U << 3)
 #define CTR_RS            (1U << 6)
 #define CTR_TQ            (1U << 8)
@@ -185,7 +186,8 @@ static void run_scenario(void)
   regs->ctr = CTR_RS | CTR_LI | CTR_TQ;
 
 #if CORE >= FIRST_RMAP_CORE
-  if (regs->ctr != (CTR_LI | CTR_TQ | CTR_RA | CTR_RX | CTR_RC | CTR_RMAP_ENABLE)) {
+  /* RE and AS take the value of the rmapen input (1) on the RMAP cores. */
+  if (regs->ctr != (CTR_LI | CTR_TQ | CTR_RA | CTR_RX | CTR_RC | CTR_RMAP_ENABLE | CTR_AS)) {
 #else
   if (regs->ctr != (CTR_LI | CTR_TQ)) {
 #endif

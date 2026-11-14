@@ -51,11 +51,22 @@ RAW_EXE    := $(call for_cores,raw,$(CORES),$(RAW_SCENARIOS)) \
 PKT_EXE    := $(CORES:%=build/pkt_irq.%.exe)
 ECHO_EXE   := $(CORES:%=build/echo.%.exe)
 
+# One test per requirement in req/, described by the "@" lines of its header
+# comment: "@side guest" files run in the guest on each core of "@cores",
+# "@side peer" files are Linux peers run against the guest req/peer_guest.c.
+REQ_SOURCES   := $(sort $(wildcard req/REQ_GRSPW_*.c))
+req_field      = $(strip $(shell sed -n 's/^ \* @$(2) *//p' $(1)))
+REQ_GUEST     := $(foreach f,$(REQ_SOURCES),$(if $(filter guest,$(call req_field,$(f),side)),$(f)))
+REQ_PEER      := $(filter-out $(REQ_GUEST),$(REQ_SOURCES))
+REQ_GUEST_EXE := $(foreach f,$(REQ_GUEST),$(foreach c,$(call req_field,$(f),cores),build/req/$(basename $(notdir $(f))).$(c).exe))
+REQ_PEER_EXE  := $(REQ_PEER:req/%.c=build/req/%.peer) $(CORES:%=build/req/peer_guest.%.exe)
+
 scenario = $(basename $*)
 core     = $(subst .,,$(suffix $*))
 
 all: $(LEGACY_EXE) $(RAW_EXE) $(PKT_EXE) $(ECHO_EXE) build/queue_test build/rmap_test \
-     build/peer_data_before_ack build/peer_time_codes
+     build/peer_data_before_ack build/peer_time_codes build/peer_script \
+     $(REQ_GUEST_EXE) $(REQ_PEER_EXE)
 	$(MAKE) -C ../rtems_hello
 	$(MAKE) -C $(ECHO_DIR)
 	$(MAKE) -C ../device_simu
@@ -79,6 +90,15 @@ build/echo.%.exe: $(ECHO_DIR)/init.c build/qemu_boot.o | build
 	$(RTEMS_CC) $(CFLAGS) -DSPW_CORE=$* -c $< -o build/echo.$*.o
 	$(RTEMS_CC) build/echo.$*.o build/qemu_boot.o $(LDFLAGS) -o $@
 
+# build/req/<file>.<core>.exe from req/<file>.c
+.SECONDEXPANSION:
+build/req/%.exe: req/$$(basename $$*).c req/req_guest.h build/qemu_boot.o | build/req
+	$(RTEMS_CC) $(CFLAGS) -Ireq -DCORE=$(core) -c $< -o build/req/$*.o
+	$(RTEMS_CC) build/req/$*.o build/qemu_boot.o $(LDFLAGS) -o $@
+
+build/req/%.peer: req/%.c req/req_peer.h | build/req
+	$(HOST_CC) $(HOST_CFLAGS) -Ireq $< -lrt -o $@
+
 build/queue_test: queue_test.c | build
 	$(HOST_CC) $(HOST_CFLAGS) $< -lrt -o $@
 
@@ -88,7 +108,7 @@ build/rmap_test: rmap_test.c | build
 build/peer_%: peer_%.c | build
 	$(HOST_CC) $(HOST_CFLAGS) $< -lrt -o $@
 
-build:
+build build/req:
 	mkdir -p $@
 
 test: all

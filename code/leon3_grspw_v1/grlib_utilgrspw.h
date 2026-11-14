@@ -19,8 +19,8 @@
 #include "grlib_typesgrspw.h"
 
 void endianness_swap(uint8 dest[], const uint8 src[], const uint32 len);
-void read_leon3_ram(const hwaddr addr, uint8 buff[], const uint32 len, const boolean sawp_endian);
-void write_leon3_ram(const hwaddr addr, const uint8 buff[], const uint32 len, const boolean sawp_endian);
+boolean read_leon3_ram(const hwaddr addr, uint8 buff[], const uint32 len, const boolean sawp_endian);
+boolean write_leon3_ram(const hwaddr addr, const uint8 buff[], const uint32 len, const boolean sawp_endian);
 
 boolean checkbit(uint32 reg, uint32 mask);
 uint32  setbit(uint32 reg, uint32 value);

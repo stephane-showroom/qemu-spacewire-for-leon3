@@ -121,6 +121,8 @@ void grlib_comgrspw_rxenable(t_grsw_deviceptr deviceptr, const uint8 data[], con
 void grlib_comgrspw_rxflush(t_grsw_deviceptr deviceptr);
 void grlib_comgrspw_txenable(t_grsw_deviceptr deviceptr);
 void grlib_comgrspw_txack(t_grsw_deviceptr deviceptr);
+void grlib_comgrspw_txabort(t_grsw_deviceptr deviceptr);
+void grlib_comgrspw_linkerror(t_grsw_deviceptr deviceptr);
 void grlib_comgrspw_reset(t_grsw_deviceptr deviceptr);
 void grlib_comgrspw_rxtimecode(t_grsw_deviceptr deviceptr, const uint8 timecode);
 

@@ -64,9 +64,13 @@ void endianness_swap(uint8 dest[], const uint8 src[], const uint32 len)
   }
 }
 
-void write_leon3_ram(const hwaddr addr, const uint8 buff[], const uint32 len, const boolean sawp_endian)
+/*
+ * \return e_false on a bus error (an access outside guest memory), as an AHB error
+ */
+boolean write_leon3_ram(const hwaddr addr, const uint8 buff[], const uint32 len, const boolean sawp_endian)
 {
   MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED; // default memory attribute
+  MemTxResult result;
 
   uint8 * tmpbuff = malloc(len); // the temporary buffer
 
@@ -81,20 +85,26 @@ void write_leon3_ram(const hwaddr addr, const uint8 buff[], const uint32 len, co
   }
 
   // copy in the temporary buffer the content of the leon3 RAM
-  address_space_write(&address_space_memory, addr, attrs, tmpbuff, len);
+  result = address_space_write(&address_space_memory, addr, attrs, tmpbuff, len);
 
   // freed the temporary buffer
   free(tmpbuff);
+
+  return (MEMTX_OK == result) ? e_true : e_false;
 }
 
-void read_leon3_ram(const hwaddr addr, uint8 buff[], const uint32 len, const boolean sawp_endian)
+/*
+ * \return e_false on a bus error (an access outside guest memory), as an AHB error
+ */
+boolean read_leon3_ram(const hwaddr addr, uint8 buff[], const uint32 len, const boolean sawp_endian)
 {
 
   MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED; // default memory attribute
   uint8 * tmpbuff = malloc(len); // the temporary buffer
+  MemTxResult result;
 
   // copy in the temporary buffer the content of the leon3 RAM
-  address_space_read(&address_space_memory, addr, attrs, tmpbuff, len);
+  result = address_space_read(&address_space_memory, addr, attrs, tmpbuff, len);
 
   int32 byte = len;
 
@@ -110,6 +120,8 @@ void read_leon3_ram(const hwaddr addr, uint8 buff[], const uint32 len, const boo
 
   // freed the temporary buffer
   free(tmpbuff);
+
+  return (MEMTX_OK == result) ? e_true : e_false;
 }
 
 

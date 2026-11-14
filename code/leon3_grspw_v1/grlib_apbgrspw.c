@@ -81,12 +81,24 @@ static void grlib_apbgrspw_write(void *opaque, hwaddr addr, uint64_t value, unsi
   t_grspw_reg_offset reg_offset = GRSPW_GET_REGOFFSET(addr); // get the selected register
 
   t_grsw_deviceptr deviceptr = &GRSPW_GET_CORE(addr,grspwptr)->device;
+  boolean link_run = ((grspw_regptr->str & C_SPWSTR_LS) == C_SPWSTR_LSRUN) ? e_true : e_false;
 
   grlib_reggrspw_write_registers( grspw_id, grspw_regptr, reg_offset, (uint32) value);
 
   if (e_ctr == reg_offset && (value & C_SPWCTR_RS))
   {
     grlib_comgrspw_reset(deviceptr);
+  }
+  else if (link_run && (grspw_regptr->str & C_SPWSTR_LS) != C_SPWSTR_LSRUN)
+  {
+    // leaving the run state during a transmission is a link error [M 77.5.7]
+    grlib_comgrspw_linkerror(deviceptr);
+  }
+
+  if (e_chn == reg_offset && (value & C_SPWCHN_AT))
+  {
+    // the pending packet is truncated and completed with LE [M 77.5.7]
+    grlib_comgrspw_txabort(deviceptr);
   }
 
   grlib_comgrspw_rxflush(deviceptr);

@@ -191,26 +191,34 @@ static boolean grlib_rmapgrspw_write(const uint32 address, const uint8 buffer[],
 }
 
 /*
+ * \brief number of reply address bytes sent: leading zeros are ignored, but one zero
+ *        is sent if there are only zeros
+ * \return the index of the first byte sent in *first
+ */
+static uint32 grlib_rmapgrspw_reply_addr_size(const t_rmap_command *command, uint32 *first)
+{
+  const uint8 *reply_addr = &command->packet[C_RMAP_REPLY_ADDR_IDX];
+
+  *first = 0;
+  while (*first + 1U < command->reply_addr_len && 0 == reply_addr[*first])
+  {
+    ++*first;
+  }
+
+  return command->reply_addr_len > 0 ? command->reply_addr_len - *first : 0U;
+}
+
+/*
  * \brief write the beginning of a reply: reply address, then the common fields
  * \return the size of the reply so far, *header points to the fields covered by the header CRC
  */
 static uint32 grlib_rmapgrspw_reply_start(const t_rmap_command *command, const uint8 status, uint8 **header)
 {
   const uint8 *reply_addr = &command->packet[C_RMAP_REPLY_ADDR_IDX];
-  uint32 first = 0;
-  uint32 size = 0;
+  uint32 first;
+  uint32 size = grlib_rmapgrspw_reply_addr_size(command, &first);
 
-  // leading zeros are ignored, but one zero is sent if there are only zeros
-  while (first + 1U < command->reply_addr_len && 0 == reply_addr[first])
-  {
-    ++first;
-  }
-
-  if (command->reply_addr_len > 0)
-  {
-    size = command->reply_addr_len - first;
-    memcpy(g_rmapreply, &reply_addr[first], size);
-  }
+  memcpy(g_rmapreply, &reply_addr[first], size);
 
   *header = &g_rmapreply[size];
   g_rmapreply[size++] = command->packet[command->tail + C_RMAP_CMD_INITIATOR];
@@ -436,7 +444,10 @@ static uint8 grlib_rmapgrspw_check_command(const t_rmap_command *command, const 
   boolean verify = (ins & C_RMAP_INS_VERIFY) != 0;
   boolean increment = (ins & C_RMAP_INS_INCREMENT) != 0;
   boolean rmw = !write && verify;
-  uint32 reply_overhead = C_RMAP_READ_REPLY_HEADER_SIZE + C_RMAP_INS_REPLY_LEN * C_WORD_SIZE + 1U;
+  uint32 first;
+  // reply address, header with its CRC, data CRC
+  uint32 reply_overhead = grlib_rmapgrspw_reply_addr_size(command, &first)
+                          + C_RMAP_READ_REPLY_HEADER_SIZE + 1U;
 
   if (rmw && !increment)
   {
@@ -479,7 +490,7 @@ static uint8 grlib_rmapgrspw_check_command(const t_rmap_command *command, const 
     return C_RMAP_NOT_AUTHORISED;
   }
 
-  if (!write && command->length + reply_overhead > C_MAXQ_SIZE)
+  if (!write && command->length + reply_overhead > C_MAX_PACKET_SIZE)
   {
     return C_RMAP_NOT_AUTHORISED; // the reply would not fit in a queue message
   }
